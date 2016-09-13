@@ -1,0 +1,534 @@
+package me . moocar . logbackgelf ;
+import java . io . ByteArrayOutputStream ;
+import java . io . IOException ;
+import java . util . zip . GZIPOutputStream ;
+public class Zipper {
+public byte [ ] zip ( String str ) {
+GZIPOutputStream zipStream = null ;
+try {
+ByteArrayOutputStream targetStream = new ByteArrayOutputStream ( ) ;
+zipStream = new GZIPOutputStream ( targetStream ) ;
+zipStream . write ( str . getBytes ( ) ) ;
+zipStream . close ( ) ;
+byte [ ] zipped = targetStream . toByteArray ( ) ;
+targetStream . close ( ) ;
+return zipped ;
+} catch ( IOException ex ) {
+throw new RuntimeException ( ex ) ;
+} finally {
+try {
+if ( zipStream != null ) {
+zipStream . close ( ) ;
+}
+} catch ( IOException ex ) {
+throw new RuntimeException ( ex ) ;
+}
+}
+}
+}
+package me . moocar . logbackgelf ;
+public class AppenderExecutor < E > {
+private final Transport transport ;
+private final PayloadChunker payloadChunker ;
+private final GelfConverter gelfConverter ;
+private final Zipper zipper ;
+private final int chunkThreshold ;
+public AppenderExecutor ( Transport transport ,
+PayloadChunker payloadChunker ,
+GelfConverter gelfConverter ,
+Zipper zipper ,
+int chunkThreshold ) {
+this . transport = transport ;
+this . payloadChunker = payloadChunker ;
+this . gelfConverter = gelfConverter ;
+this . zipper = zipper ;
+this . chunkThreshold = chunkThreshold ;
+}
+public void append ( E logEvent ) {
+byte [ ] payload = zipper . zip ( gelfConverter . toGelf ( logEvent ) ) ;
+if ( payload . length < chunkThreshold ) {
+transport . send ( payload ) ;
+} else {
+transport . send ( payloadChunker . chunkIt ( payload ) ) ;
+}
+}
+}
+package me . moocar . logbackgelf ;
+import ch . qos . logback . classic . LoggerContext ;
+import ch . qos . logback . classic . PatternLayout ;
+import ch . qos . logback . classic . spi . ILoggingEvent ;
+import ch . qos . logback . classic . util . LevelToSyslogSeverity ;
+import com . google . gson . FieldNamingPolicy ;
+import com . google . gson . Gson ;
+import com . google . gson . GsonBuilder ;
+import java . util . HashMap ;
+import java . util . Map ;
+public class GelfConverter < E > {
+private final String facility ;
+private final boolean useLoggerName ;
+private final boolean useThreadName ;
+private final Map < String , String > additionalFields ;
+private final int shortMessageLength ;
+private final String hostname ;
+private final Gson gson ;
+private final PatternLayout patternLayout ;
+public GelfConverter ( String facility ,
+boolean useLoggerName ,
+boolean useThreadName ,
+Map < String , String > additionalFields ,
+int shortMessageLength ,
+String hostname ,
+String messagePattern ) {
+this . facility = facility ;
+this . useLoggerName = useLoggerName ;
+this . useThreadName = useThreadName ;
+this . additionalFields = additionalFields ;
+this . shortMessageLength = shortMessageLength ;
+this . hostname = hostname ;
+GsonBuilder gsonBuilder = new GsonBuilder ( ) ;
+gsonBuilder . setFieldNamingPolicy ( FieldNamingPolicy . LOWER_CASE_WITH_UNDERSCORES ) ;
+this . gson = gsonBuilder . create ( ) ;
+this . patternLayout = new PatternLayout ( ) ;
+this . patternLayout . setContext ( new LoggerContext ( ) ) ;
+this . patternLayout . setPattern ( messagePattern ) ;
+this . patternLayout . start ( ) ;
+}
+public String toGelf ( E logEvent ) {
+try {
+return gson . toJson ( mapFields ( logEvent ) ) ;
+} catch ( RuntimeException e ) {
+throw new IllegalStateException ( STRING_LITERAL , e ) ;
+}
+}
+private Map < String , Object > mapFields ( E logEvent ) {
+Map < String , Object > map = new HashMap < String , Object > ( ) ;
+map . put ( STRING_LITERAL , facility ) ;
+map . put ( STRING_LITERAL , hostname ) ;
+ILoggingEvent eventObject = ( ILoggingEvent ) logEvent ;
+String message = patternLayout . doLayout ( eventObject ) ;
+map . put ( STRING_LITERAL , message ) ;
+map . put ( STRING_LITERAL , truncateToShortMessage ( message ) ) ;
+double logEventTimeTimeStamp = eventObject . getTimeStamp ( ) / 1000.0 ;
+map . put ( STRING_LITERAL , logEventTimeTimeStamp ) ;
+map . put ( STRING_LITERAL , STRING_LITERAL ) ;
+map . put ( STRING_LITERAL , LevelToSyslogSeverity . convert ( eventObject ) ) ;
+additionalFields ( map , eventObject ) ;
+return map ;
+}
+private void additionalFields ( Map < String , Object > map , ILoggingEvent eventObject ) {
+if ( useLoggerName ) {
+map . put ( STRING_LITERAL , eventObject . getLoggerName ( ) ) ;
+}
+if ( useThreadName ) {
+map . put ( STRING_LITERAL , eventObject . getThreadName ( ) ) ;
+}
+Map < String , String > mdc = eventObject . getMDCPropertyMap ( ) ;
+if ( mdc != null ) {
+for ( String key : additionalFields . keySet ( ) ) {
+String field = mdc . get ( key ) ;
+if ( field != null ) {
+map . put ( additionalFields . get ( key ) , field ) ;
+}
+}
+}
+}
+private String truncateToShortMessage ( String fullMessage ) {
+if ( fullMessage . length ( ) > shortMessageLength ) {
+return fullMessage . substring ( 0 , shortMessageLength ) ;
+}
+return fullMessage ;
+}
+}
+package me . moocar . logbackgelf ;
+import java . security . MessageDigest ;
+import java . util . Arrays ;
+public class MessageIdProvider {
+private final int messageIdLength ;
+private final MessageDigest messageDigest ;
+private final String hostname ;
+public MessageIdProvider ( int message_id_length , MessageDigest messageDigest , String hostname ) {
+messageIdLength = message_id_length ;
+this . messageDigest = messageDigest ;
+this . hostname = hostname ;
+}
+public byte [ ] get ( ) {
+String timestamp = String . valueOf ( System . nanoTime ( ) ) ;
+byte [ ] digestString = ( hostname + timestamp ) . getBytes ( ) ;
+return Arrays . copyOf ( messageDigest . digest ( digestString ) , messageIdLength ) ;
+}
+}
+package me . moocar . logbackgelf ;
+import ch . qos . logback . core . AppenderBase ;
+import java . io . * ;
+import java . net . InetAddress ;
+import java . net . NetworkInterface ;
+import java . net . SocketException ;
+import java . net . UnknownHostException ;
+import java . security . MessageDigest ;
+import java . util . Collection ;
+import java . util . Collections ;
+import java . util . HashMap ;
+import java . util . Map ;
+public class GelfAppender < E > extends AppenderBase < E > {
+private String facility = STRING_LITERAL ;
+private String graylog2ServerHost = STRING_LITERAL ;
+private int graylog2ServerPort = 12201 ;
+private boolean useLoggerName = false ;
+private boolean useThreadName = false ;
+private String graylog2ServerVersion = STRING_LITERAL ;
+private int chunkThreshold = 1000 ;
+private String messagePattern = STRING_LITERAL ;
+private Map < String , String > additionalFields = new HashMap < String , String > ( ) ;
+private int shortMessageLength = 255 ;
+private static final int maxChunks = 127 ;
+private int messageIdLength = 32 ;
+private boolean padSeq = true ;
+private final byte [ ] chunkedGelfId = new byte [ ] { 0x1e , 0x0f } ;
+private AppenderExecutor < E > appenderExecutor ;
+Override
+protected void append ( E logEvent ) {
+try {
+appenderExecutor . append ( logEvent ) ;
+} catch ( RuntimeException e ) {
+System . out . println ( getStringStackTrace ( e ) ) ;
+this . addError ( STRING_LITERAL , e ) ;
+throw e ;
+}
+}
+private String getStringStackTrace ( Exception e ) {
+Writer result = new StringWriter ( ) ;
+PrintWriter printWriter = new PrintWriter ( result ) ;
+e . printStackTrace ( printWriter ) ;
+return result . toString ( ) ;
+}
+Override
+public void start ( ) {
+super . start ( ) ;
+initExecutor ( ) ;
+}
+private void initExecutor ( ) {
+try {
+InetAddress address = getInetAddress ( ) ;
+Transport transport = new Transport ( graylog2ServerPort , address ) ;
+if ( graylog2ServerVersion . equals ( STRING_LITERAL ) ) {
+messageIdLength = 8 ;
+padSeq = false ;
+}
+String hostname = getLocalHostName ( ) ;
+PayloadChunker payloadChunker = new PayloadChunker ( chunkThreshold , maxChunks ,
+new MessageIdProvider ( messageIdLength , MessageDigest . getInstance ( STRING_LITERAL ) , hostname ) ,
+new ChunkFactory ( chunkedGelfId , padSeq ) ) ;
+GelfConverter converter = new GelfConverter ( facility , useLoggerName , useThreadName , additionalFields , shortMessageLength , hostname , messagePattern ) ;
+appenderExecutor = new AppenderExecutor < E > ( transport , payloadChunker , converter , new Zipper ( ) , chunkThreshold ) ;
+} catch ( Exception e ) {
+throw new RuntimeException ( STRING_LITERAL , e ) ;
+}
+}
+private String getLocalHostName ( ) throws SocketException , UnknownHostException {
+try {
+return InetAddress . getLocalHost ( ) . getHostName ( ) ;
+} catch ( UnknownHostException e ) {
+NetworkInterface networkInterface = NetworkInterface . getNetworkInterfaces ( ) . nextElement ( ) ;
+if ( networkInterface == null ) throw e ;
+InetAddress ipAddress = networkInterface . getInetAddresses ( ) . nextElement ( ) ;
+if ( ipAddress == null ) throw e ;
+return ipAddress . getHostAddress ( ) ;
+}
+}
+private InetAddress getInetAddress ( ) {
+try {
+return InetAddress . getByName ( graylog2ServerHost ) ;
+} catch ( UnknownHostException e ) {
+throw new IllegalStateException ( STRING_LITERAL + e . getMessage ( ) +
+STRING_LITERAL ) ;
+}
+}
+public String getFacility ( ) {
+return facility ;
+}
+public void setFacility ( String facility ) {
+this . facility = facility ;
+}
+public String getGraylog2ServerHost ( ) {
+return graylog2ServerHost ;
+}
+public void setGraylog2ServerHost ( String graylog2ServerHost ) {
+this . graylog2ServerHost = graylog2ServerHost ;
+}
+public int getGraylog2ServerPort ( ) {
+return graylog2ServerPort ;
+}
+public void setGraylog2ServerPort ( int graylog2ServerPort ) {
+this . graylog2ServerPort = graylog2ServerPort ;
+}
+public boolean isUseLoggerName ( ) {
+return useLoggerName ;
+}
+public void setUseLoggerName ( boolean useLoggerName ) {
+this . useLoggerName = useLoggerName ;
+}
+public boolean isUseThreadName ( ) {
+return useThreadName ;
+}
+public void setUseThreadName ( boolean useThreadName ) {
+this . useThreadName = useThreadName ;
+}
+public Map < String , String > getAdditionalFields ( ) {
+return additionalFields ;
+}
+public void setAdditionalFields ( Map < String , String > additionalFields ) {
+this . additionalFields = additionalFields ;
+}
+public void addAdditionalField ( String keyValue ) {
+String [ ] splitted = keyValue . split ( STRING_LITERAL ) ;
+if ( splitted . length != 2 ) {
+throw new IllegalArgumentException ( STRING_LITERAL + STRING_LITERAL + keyValue + STRING_LITERAL ) ;
+}
+additionalFields . put ( splitted [ 0 ] , splitted [ 1 ] ) ;
+}
+public int getShortMessageLength ( ) {
+return shortMessageLength ;
+}
+public void setShortMessageLength ( int shortMessageLength ) {
+this . shortMessageLength = shortMessageLength ;
+}
+public String getGraylog2ServerVersion ( ) {
+return graylog2ServerVersion ;
+}
+public void setGraylog2ServerVersion ( String graylog2ServerVersion ) {
+this . graylog2ServerVersion = graylog2ServerVersion ;
+}
+public int getChunkThreshold ( ) {
+return chunkThreshold ;
+}
+public void setChunkThreshold ( int chunkThreshold ) {
+this . chunkThreshold = chunkThreshold ;
+}
+public String getMessagePattern ( ) {
+return messagePattern ;
+}
+public void setMessagePattern ( String messagePattern ) {
+this . messagePattern = messagePattern ;
+}
+}
+package me . moocar . logbackgelf ;
+import java . io . IOException ;
+import java . net . * ;
+import java . util . List ;
+public class Transport {
+private final InetAddress graylog2ServerAddress ;
+private final int graylog2ServerPort ;
+public Transport ( int graylog2ServerPort , InetAddress graylog2ServerAddress ) {
+this . graylog2ServerPort = graylog2ServerPort ;
+this . graylog2ServerAddress = graylog2ServerAddress ;
+}
+public void send ( byte [ ] data ) {
+DatagramPacket datagramPacket = new DatagramPacket ( data , data . length , graylog2ServerAddress , graylog2ServerPort ) ;
+sendPacket ( datagramPacket ) ;
+}
+public void send ( List < byte [ ] > packets ) {
+for ( byte [ ] packet : packets ) {
+send ( packet ) ;
+}
+}
+private void sendPacket ( DatagramPacket datagramPacket ) {
+DatagramSocket datagramSocket = getDatagramSocket ( ) ;
+try {
+datagramSocket . send ( datagramPacket ) ;
+} catch ( IOException ex ) {
+throw new RuntimeException ( ex ) ;
+} finally {
+datagramSocket . close ( ) ;
+}
+}
+private DatagramSocket getDatagramSocket ( ) {
+try {
+return new DatagramSocket ( ) ;
+} catch ( SocketException ex ) {
+throw new RuntimeException ( ex ) ;
+}
+}
+}
+package me . moocar . logbackgelf ;
+import java . util . ArrayList ;
+import java . util . Arrays ;
+import java . util . List ;
+public class PayloadChunker {
+private final int payloadThreshold ;
+private final int maxChunks ;
+private final MessageIdProvider messageIdProvider ;
+private final ChunkFactory chunkFactory ;
+public PayloadChunker ( int payloadThreshold , int maxChunks , MessageIdProvider messageIdProvider ,
+ChunkFactory chunkFactory ) {
+this . payloadThreshold = payloadThreshold ;
+this . maxChunks = maxChunks ;
+this . messageIdProvider = messageIdProvider ;
+this . chunkFactory = chunkFactory ;
+}
+public List < byte [ ] > chunkIt ( byte [ ] payload ) {
+return createChunks ( messageIdProvider . get ( ) , splitPayload ( payload ) ) ;
+}
+private List < byte [ ] > createChunks ( byte [ ] messageId , List < byte [ ] > subPayloads ) {
+List < byte [ ] > chunks = new ArrayList < byte [ ] > ( ) ;
+byte seqNum = 0 ;
+for ( byte [ ] subPayload : subPayloads ) {
+if ( seqNum == maxChunks ) {
+break ;
+}
+chunks . add ( chunkFactory . create ( messageId , seqNum ++ , ( byte ) ( subPayloads . size ( ) ) , subPayload ) ) ;
+}
+return chunks ;
+}
+private List < byte [ ] > splitPayload ( byte [ ] payload ) {
+List < byte [ ] > subPayloads = new ArrayList < byte [ ] > ( ) ;
+int payloadLength = payload . length ;
+int numFullSubs = payloadLength / payloadThreshold ;
+int lastSubLength = payloadLength % payloadThreshold ;
+for ( int subPayload = 0 ; subPayload < numFullSubs ; subPayload ++ ) {
+subPayloads . add ( extractSubPayload ( payload , subPayload ) ) ;
+}
+if ( lastSubLength > 0 ) {
+subPayloads . add ( extractSubPayload ( payload , numFullSubs ) ) ;
+}
+return subPayloads ;
+}
+private byte [ ] extractSubPayload ( byte [ ] payload , int subPaylod ) {
+return Arrays . copyOfRange ( payload , subPaylod * payloadThreshold , ( subPaylod + 1 ) * payloadThreshold ) ;
+}
+}
+package me . moocar . logbackgelf ;
+import java . util . Arrays ;
+public class ChunkFactory {
+private final byte [ ] chunkedGelfId ;
+private final boolean padSeq ;
+public ChunkFactory ( byte [ ] chunked_gelf_id , boolean padSeq ) {
+chunkedGelfId = chunked_gelf_id ;
+this . padSeq = padSeq ;
+}
+public byte [ ] create ( byte [ ] messageId , byte seqNum , byte numChunks , byte [ ] subPayload ) {
+return concatArrays ( concatArrays ( concatArrays ( chunkedGelfId , messageId ) , getSeqNumbers ( seqNum , numChunks ) ) , subPayload ) ;
+}
+private byte [ ] concatArrays ( byte [ ] array1 , byte [ ] array2 ) {
+byte [ ] finalArray = Arrays . copyOf ( array1 , array2 . length + array1 . length ) ;
+System . arraycopy ( array2 , 0 , finalArray , array1 . length , array2 . length ) ;
+return finalArray ;
+}
+private byte [ ] getSeqNumbers ( byte seqNum , byte numChunks ) {
+return padSeq ? new byte [ ] { 0x00 , seqNum , 0x00 , numChunks } : new byte [ ] { seqNum , numChunks } ;
+}
+}
+package me . moocar . logbackgelf ;
+import org . junit . Test ;
+import org . slf4j . Logger ;
+import org . slf4j . LoggerFactory ;
+import org . slf4j . MDC ;
+import java . net . URL ;
+import java . util . Random ;
+public class IntegrationTest {
+private static final String longMessage = createLongMessage ( ) ;
+private static String createLongMessage ( ) {
+Random rand = new Random ( ) ;
+StringBuilder str = new StringBuilder ( ) ;
+for ( int i = 0 ; i < 1000 ; i ++ ) {
+char theChar = ( char ) ( rand . nextInt ( 30 ) + 65 ) ;
+for ( int j = 0 ; j < 80 ; j ++ ) {
+str . append ( theChar ) ;
+}
+str . append ( '\n' ) ;
+}
+return str . toString ( ) ;
+}
+Test
+public void test ( ) {
+Logger logger = LoggerFactory . getLogger ( this . getClass ( ) ) ;
+MDC . put ( STRING_LITERAL , STRING_LITERAL ) ;
+MDC . put ( STRING_LITERAL , String . valueOf ( new Random ( ) . nextInt ( 100000 ) ) ) ;
+logger . debug ( STRING_LITERAL ) ;
+logger . debug ( STRING_LITERAL , STRING_LITERAL ) ;
+try {
+new URL ( STRING_LITERAL ) ;
+} catch ( Exception e ) {
+logger . error ( STRING_LITERAL , new IllegalStateException ( e ) ) ;
+}
+logger . debug ( STRING_LITERAL + longMessage ) ;
+}
+private static class TestException extends RuntimeException {
+public TestException ( String msg ) {
+super ( msg ) ;
+}
+}
+}
+package me . moocar . logbackgelf ;
+import org . junit . Before ;
+import org . junit . Test ;
+import java . security . MessageDigest ;
+import java . security . NoSuchAlgorithmException ;
+import java . util . Arrays ;
+import java . util . List ;
+import static org . junit . Assert . * ;
+public class ChunkTest {
+private PayloadChunker createsPackets ;
+private static final byte [ ] CHUNKED_GELF_ID = new byte [ ] { 0x1e , 0x0f } ;
+private static final int CHUNKED_GELF_ID_LENGTH = CHUNKED_GELF_ID . length ;
+public final static int SEQ_NUM_LENGTH = 2 ;
+public final static int SEQ_LENGTH = 2 ;
+public final static int MESSAGE_ID_LENGTH = 8 ;
+private static final int HEADER_LENGTH = CHUNKED_GELF_ID_LENGTH + MESSAGE_ID_LENGTH + SEQ_NUM_LENGTH + SEQ_LENGTH ;
+private static final int DEFAULT_THRESHOLD = 3 ;
+private static final int MAX_CHUNKS = 127 ;
+Before
+public void setup ( ) throws NoSuchAlgorithmException {
+createsPackets = new PayloadChunker ( DEFAULT_THRESHOLD , MAX_CHUNKS , new MessageIdProvider ( MESSAGE_ID_LENGTH , MessageDigest . getInstance ( STRING_LITERAL ) , STRING_LITERAL ) , new ChunkFactory ( CHUNKED_GELF_ID , true ) ) ;
+}
+Test
+public void test1ByteMoreThanThreshold ( ) {
+List < byte [ ] > packets = go ( new byte [ ] { 1 , 2 , 3 , 4 , 5 } ) ;
+assertEquals ( 2 , packets . size ( ) ) ;
+byte [ ] firstPacket = packets . get ( 0 ) ;
+assertTrue ( DEFAULT_THRESHOLD != firstPacket . length ) ;
+assertEquals ( DEFAULT_THRESHOLD + HEADER_LENGTH , firstPacket . length ) ;
+assertArrayEquals ( CHUNKED_GELF_ID , Arrays . copyOfRange ( firstPacket , 0 , CHUNKED_GELF_ID_LENGTH ) ) ;
+int count = 0 ;
+for ( byte [ ] packet : packets ) {
+assertEquals ( count , getSeqNumber ( packets , count ) ) ;
+assertEquals ( 2 , getNumChunks ( packet ) ) ;
+count ++ ;
+}
+}
+Test
+public void testThreeChunks ( ) {
+List < byte [ ] > packets = go ( new byte [ ] { 1 , 2 , 3 , 4 , 5 , 6 , 7 , 8 , 9 } ) ;
+assertEquals ( 3 , packets . size ( ) ) ;
+for ( byte [ ] packet : packets ) {
+assertEquals ( DEFAULT_THRESHOLD + HEADER_LENGTH , packet . length ) ;
+}
+}
+Test
+public void testMessageIdsDifferent ( ) {
+List < byte [ ] > packets1 = go ( new byte [ ] { 1 , 2 , 3 , 4 , 5 , 6 } ) ;
+List < byte [ ] > packets2 = go ( new byte [ ] { 1 , 2 , 3 , 4 , 5 , 6 } ) ;
+byte [ ] messageId1 = Arrays . copyOfRange ( packets1 . get ( 0 ) , 2 , 10 ) ;
+byte [ ] messageId2 = Arrays . copyOfRange ( packets2 . get ( 0 ) , 2 , 10 ) ;
+assertFalse ( Arrays . equals ( messageId1 , messageId2 ) ) ;
+}
+Test
+public void shouldCutoffAfterMaxChunks ( ) {
+byte [ ] payload = createMassivePayload ( ) ;
+List < byte [ ] > packets = go ( payload ) ;
+assertEquals ( MAX_CHUNKS , packets . size ( ) ) ;
+}
+private byte [ ] createMassivePayload ( ) {
+byte [ ] massiveArray = new byte [ ( MAX_CHUNKS + 2 ) * DEFAULT_THRESHOLD ] ;
+Arrays . fill ( massiveArray , ( byte ) 9 ) ;
+return massiveArray ;
+}
+private List < byte [ ] > go ( byte [ ] bytes ) {
+return createsPackets . chunkIt ( bytes ) ;
+}
+private int getNumChunks ( byte [ ] packet ) {
+return packet [ CHUNKED_GELF_ID . length + MESSAGE_ID_LENGTH + SEQ_NUM_LENGTH + SEQ_LENGTH - 1 ] ;
+}
+private int getSeqNumber ( List < byte [ ] > packets , int packetNum ) {
+return packets . get ( packetNum ) [ CHUNKED_GELF_ID . length + MESSAGE_ID_LENGTH + SEQ_NUM_LENGTH - 1 ] ;
+}
+}

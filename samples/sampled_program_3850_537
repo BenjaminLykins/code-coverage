@@ -1,0 +1,537 @@
+package com . bank . config . code ;
+import javax . naming . Context ;
+import javax . naming . InitialContext ;
+import javax . naming . NamingException ;
+import javax . sql . DataSource ;
+import org . springframework . context . annotation . Bean ;
+import org . springframework . context . annotation . Configuration ;
+import org . springframework . context . annotation . Profile ;
+Configuration
+Profile ( STRING_LITERAL )
+public class JndiDataConfig implements DataConfig {
+Bean
+public DataSource dataSource ( ) {
+try {
+Context ctx = new InitialContext ( ) ;
+return ( DataSource ) ctx . lookup ( STRING_LITERAL ) ;
+} catch ( NamingException ex ) {
+throw new RuntimeException ( ex ) ;
+}
+}
+}
+package com . bank . config . code ;
+import javax . sql . DataSource ;
+import org . springframework . context . annotation . Bean ;
+import org . springframework . context . annotation . Configuration ;
+import org . springframework . context . annotation . Profile ;
+import org . springframework . jdbc . datasource . embedded . EmbeddedDatabaseBuilder ;
+import org . springframework . jdbc . datasource . embedded . EmbeddedDatabaseType ;
+Configuration
+Profile ( STRING_LITERAL )
+public class StandaloneDataConfig implements DataConfig {
+Bean
+public DataSource dataSource ( ) {
+return new EmbeddedDatabaseBuilder ( )
+. setType ( EmbeddedDatabaseType . HSQL )
+. addScript ( STRING_LITERAL )
+. addScript ( STRING_LITERAL )
+. build ( ) ;
+}
+}
+package com . bank . config . code ;
+import javax . sql . DataSource ;
+interface DataConfig {
+DataSource dataSource ( ) ;
+}
+package com . bank . config . code ;
+import org . springframework . beans . factory . annotation . Autowired ;
+import org . springframework . context . annotation . Bean ;
+import org . springframework . context . annotation . Configuration ;
+import com . bank . repository . AccountRepository ;
+import com . bank . repository . internal . JdbcAccountRepository ;
+import com . bank . service . FeePolicy ;
+import com . bank . service . TransferService ;
+import com . bank . service . internal . DefaultTransferService ;
+import com . bank . service . internal . ZeroFeePolicy ;
+Configuration
+public class TransferServiceConfig {
+Autowired DataConfig dataConfig ;
+Bean
+public TransferService transferService ( ) {
+return new DefaultTransferService ( accountRepository ( ) , feePolicy ( ) ) ;
+}
+Bean
+public AccountRepository accountRepository ( ) {
+return new JdbcAccountRepository ( dataConfig . dataSource ( ) ) ;
+}
+Bean
+public FeePolicy feePolicy ( ) {
+return new ZeroFeePolicy ( ) ;
+}
+}
+package com . bank . repository ;
+SuppressWarnings ( STRING_LITERAL )
+public class AccountNotFoundException extends RuntimeException {
+public AccountNotFoundException ( String acctId ) {
+super ( String . format ( STRING_LITERAL , acctId ) ) ;
+}
+}
+package com . bank . repository ;
+import com . bank . domain . Account ;
+public interface AccountRepository {
+Account findById ( String srcAcctId ) ;
+void updateBalance ( Account dstAcct ) ;
+}
+package com . bank . repository . internal ;
+import java . sql . ResultSet ;
+import java . sql . SQLException ;
+import javax . sql . DataSource ;
+import org . springframework . jdbc . core . JdbcTemplate ;
+import org . springframework . jdbc . core . RowMapper ;
+import com . bank . domain . Account ;
+import com . bank . repository . AccountRepository ;
+public class JdbcAccountRepository implements AccountRepository {
+private final JdbcTemplate jdbcTemplate ;
+public JdbcAccountRepository ( DataSource dataSource ) {
+jdbcTemplate = new JdbcTemplate ( dataSource ) ;
+}
+Override
+public Account findById ( String srcAcctId ) {
+return jdbcTemplate . queryForObject ( STRING_LITERAL , new AccountRowMapper ( ) , srcAcctId ) ;
+}
+Override
+public void updateBalance ( Account dstAcct ) {
+jdbcTemplate . update ( STRING_LITERAL , dstAcct . getBalance ( ) , dstAcct . getId ( ) ) ;
+}
+private static class AccountRowMapper implements RowMapper < Account > {
+Override
+public Account mapRow ( ResultSet rs , int rowNum ) throws SQLException {
+return new Account ( rs . getString ( STRING_LITERAL ) , rs . getDouble ( STRING_LITERAL ) ) ;
+}
+}
+}
+package com . bank . repository . internal ;
+import java . util . HashMap ;
+import java . util . Map ;
+import com . bank . domain . Account ;
+import com . bank . repository . AccountNotFoundException ;
+import com . bank . repository . AccountRepository ;
+public class SimpleAccountRepository implements AccountRepository {
+public static class Data {
+public static final String A123_ID = STRING_LITERAL ;
+public static final String C456_ID = STRING_LITERAL ;
+public static final String Z999_ID = STRING_LITERAL ;
+public static final double A123_INITIAL_BAL = 100.00 ;
+public static final double C456_INITIAL_BAL = 0.00 ;
+}
+SuppressWarnings ( STRING_LITERAL )
+private final Map < String , Account > accountsById = new HashMap < String , Account > ( ) { {
+put ( Data . A123_ID , new Account ( Data . A123_ID , Data . A123_INITIAL_BAL ) ) ;
+put ( Data . C456_ID , new Account ( Data . C456_ID , Data . C456_INITIAL_BAL ) ) ;
+} } ;
+Override
+public Account findById ( String acctId ) {
+return Account . copy ( nullSafeAccountLookup ( acctId ) ) ;
+}
+Override
+public void updateBalance ( Account account ) {
+Account actualAccount = nullSafeAccountLookup ( account . getId ( ) ) ;
+actualAccount . setBalance ( account . getBalance ( ) ) ;
+}
+private Account nullSafeAccountLookup ( String acctId ) {
+Account account = accountsById . get ( acctId ) ;
+if ( account == null )
+throw new AccountNotFoundException ( acctId ) ;
+return account ;
+}
+}
+package com . bank . domain ;
+public class Account {
+private final String id ;
+private double balance ;
+public Account ( String id , double initialBalance ) {
+this . id = id ;
+this . balance = initialBalance ;
+}
+public void debit ( double amount ) throws InsufficientFundsException {
+assertValid ( amount ) ;
+if ( amount > balance )
+throw new InsufficientFundsException ( this , amount ) ;
+balance -= amount ;
+}
+public void credit ( double amount ) {
+assertValid ( amount ) ;
+balance += amount ;
+}
+public String getId ( ) {
+return id ;
+}
+public double getBalance ( ) {
+return balance ;
+}
+public void setBalance ( double balance ) {
+this . balance = balance ;
+}
+private void assertValid ( double amount ) {
+if ( ! ( amount > 0.00 ) )
+throw new IllegalArgumentException ( STRING_LITERAL ) ;
+}
+public static Account copy ( Account account ) {
+return new Account ( account . getId ( ) , account . getBalance ( ) ) ;
+}
+}
+package com . bank . domain ;
+import static java . lang . String . format ;
+public class TransferReceipt {
+private double transferAmount ;
+private double feeAmount ;
+private Account initialSourceAccountCopy ;
+private Account initialDestinationAccountCopy ;
+private Account finalSourceAccountCopy ;
+private Account finalDestinationAccountCopy ;
+public void setTransferAmount ( double transferAmount ) {
+this . transferAmount = transferAmount ;
+}
+public double getTransferAmount ( ) {
+return transferAmount ;
+}
+public void setFeeAmount ( double feeAmount ) {
+this . feeAmount = feeAmount ;
+}
+public double getFeeAmount ( ) {
+return feeAmount ;
+}
+public void setInitialSourceAccount ( Account account ) {
+initialSourceAccountCopy = Account . copy ( account ) ;
+}
+public void setFinalSourceAccount ( Account account ) {
+finalSourceAccountCopy = Account . copy ( account ) ;
+}
+public Account getFinalSourceAccount ( ) {
+return finalSourceAccountCopy ;
+}
+public void setInitialDestinationAccount ( Account account ) {
+initialDestinationAccountCopy = Account . copy ( account ) ;
+}
+public void setFinalDestinationAccount ( Account account ) {
+finalDestinationAccountCopy = Account . copy ( account ) ;
+}
+public Account getFinalDestinationAccount ( ) {
+return finalDestinationAccountCopy ;
+}
+Override
+public String toString ( ) {
+StringBuilder sb = new StringBuilder ( )
+. append ( format ( STRING_LITERAL ,
+transferAmount , initialSourceAccountCopy . getId ( ) ,
+initialDestinationAccountCopy . getId ( ) , feeAmount ) )
+. append ( format ( STRING_LITERAL ,
+initialSourceAccountCopy . getId ( ) ,
+initialSourceAccountCopy . getBalance ( ) ,
+finalSourceAccountCopy . getBalance ( ) ) )
+. append ( format ( STRING_LITERAL ,
+initialDestinationAccountCopy . getId ( ) ,
+initialDestinationAccountCopy . getBalance ( ) ,
+finalDestinationAccountCopy . getBalance ( ) ) ) ;
+return sb . toString ( ) ;
+}
+}
+package com . bank . domain ;
+import static java . lang . String . format ;
+SuppressWarnings ( STRING_LITERAL )
+public class InsufficientFundsException extends Exception {
+private final Account targetAccount ;
+private final double attemptedAmount ;
+public InsufficientFundsException ( Account targetAccount , double attemptedAmount ) {
+this . targetAccount = Account . copy ( targetAccount ) ;
+this . attemptedAmount = attemptedAmount ;
+}
+public String getTargetAccountId ( ) {
+return targetAccount . getId ( ) ;
+}
+public double getTargetAccountBalance ( ) {
+return targetAccount . getBalance ( ) ;
+}
+public double getAttemptedAmount ( ) {
+return attemptedAmount ;
+}
+public double getOverage ( ) {
+return getAttemptedAmount ( ) - getTargetAccountBalance ( ) ;
+}
+public String toString ( ) {
+StringBuilder sb = new StringBuilder ( )
+. append ( format ( STRING_LITERAL +
+STRING_LITERAL , getAttemptedAmount ( ) , getTargetAccountId ( ) ) )
+. append ( format ( STRING_LITERAL , getTargetAccountBalance ( ) ) )
+. append ( format ( STRING_LITERAL , getOverage ( ) ) ) ;
+return sb . toString ( ) ;
+}
+}
+package com . bank . service ;
+import com . bank . domain . InsufficientFundsException ;
+import com . bank . domain . TransferReceipt ;
+public interface TransferService {
+TransferReceipt transfer ( double amount , String srcAcctId , String destAcctId )
+throws InsufficientFundsException ;
+void setMinimumTransferAmount ( double minimumTransferAmount ) ;
+}
+package com . bank . service ;
+public interface FeePolicy {
+public double calculateFee ( double transferAmount ) ;
+}
+package com . bank . service . internal ;
+import com . bank . service . FeePolicy ;
+public class ZeroFeePolicy implements FeePolicy {
+private static final double ZERO_AMOUNT = 0.00 d ;
+Override
+public double calculateFee ( double transferAmount ) {
+return ZERO_AMOUNT ;
+}
+}
+package com . bank . service . internal ;
+import com . bank . service . FeePolicy ;
+public class VariableFeePolicy implements FeePolicy {
+private double feePercentage ;
+private double minimumFee ;
+public void setMinimumFee ( double minimumFee ) {
+this . minimumFee = minimumFee ;
+}
+public void setFeePercentage ( double feePercentage ) {
+this . feePercentage = feePercentage ;
+}
+Override
+public double calculateFee ( double transferAmount ) {
+double variableFee = transferAmount * ( feePercentage / 100 ) ;
+return variableFee > minimumFee ? variableFee : minimumFee ;
+}
+}
+package com . bank . service . internal ;
+import com . bank . service . FeePolicy ;
+public class FlatFeePolicy implements FeePolicy {
+private final double flatFee ;
+public FlatFeePolicy ( double flatFee ) {
+this . flatFee = flatFee ;
+}
+public double calculateFee ( double transferAmount ) {
+return flatFee ;
+}
+}
+package com . bank . service . internal ;
+import static java . lang . String . format ;
+import org . springframework . transaction . annotation . Transactional ;
+import com . bank . domain . Account ;
+import com . bank . domain . InsufficientFundsException ;
+import com . bank . domain . TransferReceipt ;
+import com . bank . repository . AccountRepository ;
+import com . bank . service . FeePolicy ;
+import com . bank . service . TransferService ;
+public class DefaultTransferService implements TransferService {
+private final AccountRepository accountRepository ;
+private final FeePolicy feePolicy ;
+private double minimumTransferAmount = 1.00 ;
+public DefaultTransferService ( AccountRepository accountRepository , FeePolicy feePolicy ) {
+this . accountRepository = accountRepository ;
+this . feePolicy = feePolicy ;
+}
+Override
+public void setMinimumTransferAmount ( double minimumTransferAmount ) {
+this . minimumTransferAmount = minimumTransferAmount ;
+}
+Override
+Transactional
+public TransferReceipt transfer ( double amount , String srcAcctId , String dstAcctId ) throws InsufficientFundsException {
+if ( amount < minimumTransferAmount )
+throw new IllegalArgumentException (
+format ( STRING_LITERAL , minimumTransferAmount ) ) ;
+TransferReceipt receipt = new TransferReceipt ( ) ;
+Account srcAcct = accountRepository . findById ( srcAcctId ) ;
+Account dstAcct = accountRepository . findById ( dstAcctId ) ;
+receipt . setInitialSourceAccount ( srcAcct ) ;
+receipt . setInitialDestinationAccount ( dstAcct ) ;
+double fee = feePolicy . calculateFee ( amount ) ;
+if ( fee > 0 )
+srcAcct . debit ( fee ) ;
+receipt . setTransferAmount ( amount ) ;
+receipt . setFeeAmount ( fee ) ;
+srcAcct . debit ( amount ) ;
+dstAcct . credit ( amount ) ;
+accountRepository . updateBalance ( srcAcct ) ;
+accountRepository . updateBalance ( dstAcct ) ;
+receipt . setFinalSourceAccount ( srcAcct ) ;
+receipt . setFinalDestinationAccount ( dstAcct ) ;
+return receipt ;
+}
+}
+package com . bank . config . xml ;
+import static org . hamcrest . CoreMatchers . equalTo ;
+import static org . junit . Assert . assertThat ;
+import org . junit . Test ;
+import org . springframework . context . support . GenericXmlApplicationContext ;
+import com . bank . domain . InsufficientFundsException ;
+import com . bank . repository . AccountRepository ;
+import com . bank . service . TransferService ;
+public class IntegrationTests {
+Test
+public void transferTenDollars ( ) throws InsufficientFundsException {
+GenericXmlApplicationContext ctx = new GenericXmlApplicationContext ( ) ;
+ctx . getEnvironment ( ) . setActiveProfiles ( STRING_LITERAL ) ;
+ctx . load ( STRING_LITERAL ) ;
+ctx . refresh ( ) ;
+TransferService transferService = ctx . getBean ( TransferService . class ) ;
+AccountRepository accountRepository = ctx . getBean ( AccountRepository . class ) ;
+assertThat ( accountRepository . findById ( STRING_LITERAL ) . getBalance ( ) , equalTo ( 100.00 ) ) ;
+assertThat ( accountRepository . findById ( STRING_LITERAL ) . getBalance ( ) , equalTo ( 0.00 ) ) ;
+transferService . transfer ( 10.00 , STRING_LITERAL , STRING_LITERAL ) ;
+assertThat ( accountRepository . findById ( STRING_LITERAL ) . getBalance ( ) , equalTo ( 90.00 ) ) ;
+assertThat ( accountRepository . findById ( STRING_LITERAL ) . getBalance ( ) , equalTo ( 10.00 ) ) ;
+}
+}
+package com . bank . config . code ;
+import static org . hamcrest . CoreMatchers . equalTo ;
+import static org . junit . Assert . assertThat ;
+import org . junit . Test ;
+import org . springframework . context . annotation . AnnotationConfigApplicationContext ;
+import com . bank . domain . InsufficientFundsException ;
+import com . bank . repository . AccountRepository ;
+import com . bank . service . TransferService ;
+public class IntegrationTests {
+Test
+public void transferTenDollars ( ) throws InsufficientFundsException {
+AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext ( ) ;
+ctx . getEnvironment ( ) . setDefaultProfiles ( STRING_LITERAL ) ;
+ctx . register ( TransferServiceConfig . class , StandaloneDataConfig . class , JndiDataConfig . class ) ;
+ctx . refresh ( ) ;
+TransferService transferService = ctx . getBean ( TransferService . class ) ;
+AccountRepository accountRepository = ctx . getBean ( AccountRepository . class ) ;
+assertThat ( accountRepository . findById ( STRING_LITERAL ) . getBalance ( ) , equalTo ( 100.00 ) ) ;
+assertThat ( accountRepository . findById ( STRING_LITERAL ) . getBalance ( ) , equalTo ( 0.00 ) ) ;
+transferService . transfer ( 10.00 , STRING_LITERAL , STRING_LITERAL ) ;
+assertThat ( accountRepository . findById ( STRING_LITERAL ) . getBalance ( ) , equalTo ( 90.00 ) ) ;
+assertThat ( accountRepository . findById ( STRING_LITERAL ) . getBalance ( ) , equalTo ( 10.00 ) ) ;
+}
+}
+package com . bank . service . internal ;
+import static com . bank . repository . internal . SimpleAccountRepository . Data . * ;
+import static org . hamcrest . CoreMatchers . equalTo ;
+import static org . junit . Assert . assertThat ;
+import static org . junit . Assert . fail ;
+import org . junit . Before ;
+import org . junit . Test ;
+import com . bank . domain . InsufficientFundsException ;
+import com . bank . domain . TransferReceipt ;
+import com . bank . repository . AccountNotFoundException ;
+import com . bank . repository . AccountRepository ;
+import com . bank . repository . internal . SimpleAccountRepository ;
+import com . bank . service . FeePolicy ;
+import com . bank . service . TransferService ;
+import com . bank . service . internal . FlatFeePolicy ;
+import com . bank . service . internal . DefaultTransferService ;
+import com . bank . service . internal . ZeroFeePolicy ;
+public class DefaultTransferServiceTests {
+private AccountRepository accountRepository ;
+private TransferService transferService ;
+Before
+public void setUp ( ) {
+accountRepository = new SimpleAccountRepository ( ) ;
+FeePolicy feePolicy = new ZeroFeePolicy ( ) ;
+transferService = new DefaultTransferService ( accountRepository , feePolicy ) ;
+assertThat ( accountRepository . findById ( A123_ID ) . getBalance ( ) , equalTo ( A123_INITIAL_BAL ) ) ;
+assertThat ( accountRepository . findById ( C456_ID ) . getBalance ( ) , equalTo ( C456_INITIAL_BAL ) ) ;
+}
+Test
+public void testTransfer ( ) throws InsufficientFundsException {
+double transferAmount = 100.00 ;
+TransferReceipt receipt = transferService . transfer ( transferAmount , A123_ID , C456_ID ) ;
+assertThat ( receipt . getTransferAmount ( ) , equalTo ( transferAmount ) ) ;
+assertThat ( receipt . getFinalSourceAccount ( ) . getBalance ( ) , equalTo ( A123_INITIAL_BAL - transferAmount ) ) ;
+assertThat ( receipt . getFinalDestinationAccount ( ) . getBalance ( ) , equalTo ( C456_INITIAL_BAL + transferAmount ) ) ;
+assertThat ( accountRepository . findById ( A123_ID ) . getBalance ( ) , equalTo ( A123_INITIAL_BAL - transferAmount ) ) ;
+assertThat ( accountRepository . findById ( C456_ID ) . getBalance ( ) , equalTo ( C456_INITIAL_BAL + transferAmount ) ) ;
+}
+Test
+public void testInsufficientFunds ( ) {
+double overage = 9.00 ;
+double transferAmount = A123_INITIAL_BAL + overage ;
+try {
+transferService . transfer ( transferAmount , A123_ID , C456_ID ) ;
+fail ( STRING_LITERAL ) ;
+} catch ( InsufficientFundsException ex ) {
+assertThat ( ex . getTargetAccountId ( ) , equalTo ( A123_ID ) ) ;
+assertThat ( ex . getOverage ( ) , equalTo ( overage ) ) ;
+}
+assertThat ( accountRepository . findById ( A123_ID ) . getBalance ( ) , equalTo ( A123_INITIAL_BAL ) ) ;
+assertThat ( accountRepository . findById ( C456_ID ) . getBalance ( ) , equalTo ( C456_INITIAL_BAL ) ) ;
+}
+Test
+public void testNonExistentSourceAccount ( ) throws InsufficientFundsException {
+try {
+transferService . transfer ( 1.00 , Z999_ID , C456_ID ) ;
+fail ( STRING_LITERAL ) ;
+} catch ( AccountNotFoundException ex ) { }
+assertThat ( accountRepository . findById ( C456_ID ) . getBalance ( ) , equalTo ( C456_INITIAL_BAL ) ) ;
+}
+Test
+public void testNonExistentDestinationAccount ( ) throws InsufficientFundsException {
+try {
+transferService . transfer ( 1.00 , A123_ID , Z999_ID ) ;
+fail ( STRING_LITERAL ) ;
+} catch ( AccountNotFoundException ex ) { }
+assertThat ( accountRepository . findById ( A123_ID ) . getBalance ( ) , equalTo ( A123_INITIAL_BAL ) ) ;
+}
+Test
+public void testZeroTransferAmount ( ) throws InsufficientFundsException {
+try {
+transferService . transfer ( 0.00 , A123_ID , C456_ID ) ;
+fail ( STRING_LITERAL ) ;
+} catch ( IllegalArgumentException ex ) { }
+}
+Test
+public void testNegativeTransferAmount ( ) throws InsufficientFundsException {
+try {
+transferService . transfer ( - 100.00 , A123_ID , C456_ID ) ;
+fail ( STRING_LITERAL ) ;
+} catch ( IllegalArgumentException ex ) { }
+}
+Test
+public void testTransferAmountLessThanOneCent ( ) throws InsufficientFundsException {
+try {
+transferService . transfer ( 0.009 , A123_ID , C456_ID ) ;
+fail ( STRING_LITERAL ) ;
+} catch ( IllegalArgumentException ex ) { }
+}
+Test
+public void testCustomizedMinimumTransferAmount ( ) throws InsufficientFundsException {
+transferService . transfer ( 1.00 , A123_ID , C456_ID ) ;
+transferService . setMinimumTransferAmount ( 10.00 ) ;
+transferService . transfer ( 10.00 , A123_ID , C456_ID ) ;
+try {
+transferService . transfer ( 9.00 , A123_ID , C456_ID ) ;
+fail ( STRING_LITERAL ) ;
+} catch ( IllegalArgumentException ex ) { }
+}
+Test
+public void testNonZeroFeePolicy ( ) throws InsufficientFundsException {
+double flatFee = 5.00 ;
+double transferAmount = 10.00 ;
+transferService = new DefaultTransferService ( accountRepository , new FlatFeePolicy ( flatFee ) ) ;
+transferService . transfer ( transferAmount , A123_ID , C456_ID ) ;
+assertThat ( accountRepository . findById ( A123_ID ) . getBalance ( ) , equalTo ( A123_INITIAL_BAL - transferAmount - flatFee ) ) ;
+assertThat ( accountRepository . findById ( C456_ID ) . getBalance ( ) , equalTo ( C456_INITIAL_BAL + transferAmount ) ) ;
+}
+}
+package com . bank . service . internal ;
+import static org . hamcrest . CoreMatchers . equalTo ;
+import static org . junit . Assert . assertThat ;
+import org . junit . Test ;
+import com . bank . service . internal . VariableFeePolicy ;
+public class VariableFeePolicyTests {
+Test
+public void testVariableFee ( ) {
+VariableFeePolicy feePolicy = new VariableFeePolicy ( ) ;
+feePolicy . setFeePercentage ( 1.00 ) ;
+feePolicy . setMinimumFee ( 1.00 ) ;
+assertThat ( feePolicy . calculateFee ( 1000.00 ) , equalTo ( 10.00 ) ) ;
+assertThat ( feePolicy . calculateFee ( 100.00 ) , equalTo ( 1.00 ) ) ;
+assertThat ( feePolicy . calculateFee ( 10.00 ) , equalTo ( 1.00 ) ) ;
+}
+}

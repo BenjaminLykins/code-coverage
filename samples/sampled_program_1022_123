@@ -1,0 +1,123 @@
+package com . cmd . server . radar . backend ;
+import org . springframework . stereotype . Service ;
+import com . cmd . server . radar . model . TrapInfo ;
+Service
+public class TrapInfoProcessor implements TrapInfoProcessable {
+public void processTrapInfo ( TrapInfo reading ) {
+}
+}
+package com . cmd . server . radar . backend ;
+import org . springframework . scheduling . annotation . Async ;
+import com . cmd . server . radar . model . TrapInfo ;
+public interface TrapInfoProcessable {
+Async
+public abstract void processTrapInfo ( TrapInfo info ) ;
+}
+package com . cmd . server . radar . service ;
+import org . apache . log4j . Logger ;
+import org . springframework . beans . factory . annotation . Autowired ;
+import org . springframework . stereotype . Component ;
+import com . cmd . server . radar . backend . TrapInfoProcessable ;
+import com . cmd . server . radar . model . TrapInfo ;
+import javax . ws . rs . GET ;
+import javax . ws . rs . POST ;
+import javax . ws . rs . Path ;
+import javax . ws . rs . PathParam ;
+import javax . ws . rs . Produces ;
+import javax . ws . rs . core . MediaType ;
+Component
+Path ( STRING_LITERAL )
+Produces ( { MediaType . APPLICATION_JSON , MediaType . APPLICATION_XML , STRING_LITERAL } )
+public class TrapReportService {
+private static final Logger log = Logger . getLogger ( TrapReportService . class ) ;
+Autowired
+private TrapInfoProcessable thingy ;
+POST
+public void addTrapInfo ( TrapInfo info ) {
+thingy . processTrapInfo ( info ) ;
+log . debug ( info . toString ( ) ) ;
+}
+GET
+public TrapInfo getTrapInfo ( ) {
+log . debug ( STRING_LITERAL ) ;
+TrapInfo trap = new TrapInfo ( ) ;
+trap . setAndroidID ( STRING_LITERAL ) ;
+trap . setAccuracy ( 0 ) ;
+trap . setBearing ( 0 ) ;
+trap . setLoc ( null ) ;
+trap . setSpeed ( 2 ) ;
+trap . setTimeAtLocation ( 1212 ) ;
+trap . setTimeAtShake ( 8989 ) ;
+return trap ;
+}
+}
+package com . cmd . server . radar . model ;
+import javax . xml . bind . annotation . XmlRootElement ;
+import javax . xml . bind . annotation . XmlAccessType ;
+import javax . xml . bind . annotation . XmlAccessorType ;
+import javax . xml . bind . annotation . XmlType ;
+XmlAccessorType ( XmlAccessType . FIELD )
+XmlType ( name = STRING_LITERAL , propOrder = {
+STRING_LITERAL ,
+STRING_LITERAL ,
+STRING_LITERAL ,
+STRING_LITERAL ,
+STRING_LITERAL ,
+STRING_LITERAL ,
+STRING_LITERAL
+} )
+XmlRootElement ( name = STRING_LITERAL )
+public class TrapInfo {
+private double [ ] loc ;
+private double speed ;
+private double accuracy ;
+private double bearing ;
+private long timeAtShake ;
+private long timeAtLocation ;
+private String androidID ;
+public double [ ] getLoc ( ) {
+return loc ;
+}
+public void setLoc ( double [ ] loc ) {
+this . loc = loc ;
+}
+public double getSpeed ( ) {
+return speed ;
+}
+public void setSpeed ( double speed ) {
+this . speed = speed ;
+}
+public double getAccuracy ( ) {
+return accuracy ;
+}
+public void setAccuracy ( double accuracy ) {
+this . accuracy = accuracy ;
+}
+public double getBearing ( ) {
+return bearing ;
+}
+public void setBearing ( double bearing ) {
+this . bearing = bearing ;
+}
+public long getTimeAtShake ( ) {
+return timeAtShake ;
+}
+public void setTimeAtShake ( long timeAtShake ) {
+this . timeAtShake = timeAtShake ;
+}
+public long getTimeAtLocation ( ) {
+return timeAtLocation ;
+}
+public void setTimeAtLocation ( long timeAtLocation ) {
+this . timeAtLocation = timeAtLocation ;
+}
+public String getAndroidID ( ) {
+return androidID ;
+}
+public void setAndroidID ( String androidID ) {
+this . androidID = androidID ;
+}
+public String toString ( ) {
+return STRING_LITERAL + STRING_LITERAL + speed + STRING_LITERAL + accuracy + STRING_LITERAL + bearing + STRING_LITERAL + timeAtShake + STRING_LITERAL + timeAtLocation + STRING_LITERAL + androidID ;
+}
+}
